@@ -9,24 +9,31 @@
 #
 
 from glob import glob
-from pathlib import Path
+from tkinter import Image
 
+import numpy
 import cv2
 import errno
 import argparse
 import json
 
+#LuisV
+from tqdm import tqdm
+import PIL.Image
+from numpy import array
+
 import pkg_resources
 
 import PySimpleGUI as sg
 
-from .tools.color_palette import get_color_names
+#from .tools.color_palette import get_color_names
 from .tools.generate_segmented_pictures import generate_images
-from .tools.create_original_case_study import create_collage
+from .tools.create_original_case_study import create_case_study
 from .tools.fast_style_transfer import apply_style_transfer
 from .tools.watermarking import add_watermark
 
 from .Musesetup import *
+import pandas as pd
 
 sg.theme('DarkAmber')
 
@@ -41,7 +48,7 @@ layout = [[sg.Text("Dossier d'images substituts"), sg.Input(), sg.FolderBrowse(i
 
 
 def generate_full_case_study(painting_folder: str, substitute_folder: str,
-                             background_folder: str, interpretation_folder: str) -> None:
+                             background_folder: str, interpretation_folder: str):
     """
     :param painting_folder:
     :param substitute_folder:
@@ -57,31 +64,59 @@ def generate_full_case_study(painting_folder: str, substitute_folder: str,
     # The results are stored in 'interpretation_folder'
     ##
     if args.verbose:
-        print("   Calling create_collage")
+        print("   Calling create_case_study")
 
-    trace_log = create_collage(painting_folder, substitute_folder,
-                               background_folder, interpretation_folder, 1)
+    trace_log = create_case_study(painting_folder, substitute_folder, background_folder, interpretation_folder, 1,
+                                  args.bw)
 
     if args.verbose:
-        print("   Done calling create_collage")
+        print("   Done calling create_case_study")
 
     ##
     # Go over all images in 'default_painting_folder' and the corresponding images in
     # 'default_interpretation_folder' and apply a style transfer.
     ##
-    painting_file_list = [y for x in [glob(f'{painting_folder}/*.{ext}') for ext in image_extensions]
-                          for y in x]
+    
+    #painting_file_list = [y for x in [glob(f'{painting_folder}/*.{ext}', recursive=True) for ext in image_extensions]
+    #                      for y in x]
+    
+    # LuisV
+    # Get the list of all files in directory tree at given path
+    painting_file_list = list()
+    for (dirpath, dirnames, filenames) in os.walk(painting_folder):
+        painting_file_list += [os.path.join(dirpath, file) for file in filenames]
+    print(f">>>{len(painting_file_list)} paintings")
 
-    for painting in painting_file_list:
+    #for painting in painting_file_list:
+    #LuisV:
+    for painting in tqdm(painting_file_list):
+        
+        painting_name = os.path.basename(painting).rsplit(".", 1)[0]
 
         if args.verbose:
             print("    Handling " + painting)
-
+        """
         interpretation_file_list = [y for x in
-                                    [glob(f'{interpretation_folder}/{os.path.basename(painting)}*.{ext}')
+                                    [glob(interpretation_folder + '/%s*.%s' % (os.path.basename(painting), ext))
                                      for ext in image_extensions]
                                     for y in x]
+        """
+        #LuisV: support for subfolders
+        interpretation_file_list = list()
+        for (dirpath, dirnames, filenames) in os.walk(interpretation_folder):
+            interpretation_file_list += [
+                os.path.join(dirpath, file) 
+                for file in filenames
+                if str(os.path.basename(file)).startswith(painting_name)
+                #painting_name in file
+                ]
 
+        #LuisV
+        #print(interpretation_file_list)
+        #trace_log[painting]["colors_final"] = dict()
+        #trace_log[painting]["colors_painting"] = dict()
+        #trace_log[painting]["colors_background"] = dict()
+        
         for interpretation in interpretation_file_list:
             ##
             # The following function will apply a style transfer on 'interpretation' as to have it
@@ -91,14 +126,25 @@ def generate_full_case_study(painting_folder: str, substitute_folder: str,
             if args.verbose:
                 print(f'    Saving {interpretation}')
 
-            new_interpretation = f'{interpretation_folder}/{Path(interpretation).stem}.png'
-            final_image = apply_style_transfer(interpretation, painting, new_interpretation, args.rescale)
-
-            if new_interpretation != interpretation:
-                os.remove(interpretation)
-                interpretation = new_interpretation
-
-            trace_log[painting] += f'{get_color_names(final_image)}'
+            #LuisV
+            #print("HEEEEEEYY")
+            #print("interpretation", get_color_names(numpy.array(PIL.Image.open(interpretation) ) ) )
+            
+            #LuisV
+            #trace_log[painting]["colors_background"][interpretation] = get_color_names(numpy.array(PIL.Image.open(interpretation) ) )
+            #trace_log[painting]["colors_painting"][interpretation]  = get_color_names(numpy.array(PIL.Image.open(painting) ) )
+            
+            #LuisV
+            background_image_path = interpretation
+            final_image = apply_style_transfer(interpretation, painting, interpretation, args.rescale)
+            #trace_log[painting] += f'{get_color_names(final_image)}'
+            #LuisV
+            #trace_log[painting]["colors_final"][interpretation] = get_color_names(final_image)
+            
+            #LuisV
+            #print("final", get_color_names(final_image))
+            #print("painting", get_color_names(numpy.array(PIL.Image.open(painting) ) ) )
+            #print("OOOOOHHH")
 
             if args.verbose:
                 print(f'    Done saving {interpretation}')
@@ -110,13 +156,52 @@ def generate_full_case_study(painting_folder: str, substitute_folder: str,
                 final_image = cv2.imread(interpretation, cv2.IMREAD_UNCHANGED)
                 final_image = add_watermark(final_image, args.watermark)
                 cv2.imwrite(interpretation, final_image)
+    
+    #LuisV: the trace will be saved in a JSON and a CSV file
 
     if args.trace_file:
-        if args.verbose:
-            print(f"Writing trace_log file {args.trace_file}")
-        with open(args.trace_file, 'w') as f:
-            f.write(json.dumps(trace_log))
 
+        trace_file_path = (args.trace_file).rsplit(".", 1)[0]
+        trace_file_json_path = trace_file_path + ".json"
+        trace_file_csv_path = trace_file_path + ".csv"
+
+        with open(trace_file_json_path, 'w') as f:
+            #f.write(json.dumps(trace_log))
+            #LuisV
+            print("Saving JSON in ", trace_file_json_path)
+            f.write(json.dumps(trace_log, indent= 2 ))
+        
+        # LuisV: create a csv file
+        df = pd.DataFrame(columns=[
+            'image_file', 'method',         # mashup data
+            'painting_name', 'painting_contains',  # painting data
+            'background_name', 'background_colors', # background data
+            'painting_path', 'background_path', # paths
+            ])
+        for painting in trace_log.keys():
+            for mash_up_dict in trace_log[painting]["mash_ups"]:
+                row_dict = {
+                    'image_file': mash_up_dict["mash_up_path"],
+                    'method': mash_up_dict['method'],
+                    'painting_name': trace_log[painting]["painting_name"],
+                    'painting_path': trace_log[painting]["painting_path"],
+                    'painting_contains': trace_log[painting]["painting_contains"],
+                    'background_name': mash_up_dict['background_name'],
+                    'background_path': mash_up_dict['background_path'],
+                    'background_colors': mash_up_dict['background_colors'],
+                }
+
+                df = df.append(row_dict, ignore_index= True)
+        
+        #save csv
+        print("Saving JSON in ", trace_file_csv_path)
+        df.to_csv(trace_file_csv_path)
+
+                
+def convert_to_absolute_path(path):
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)        
+    return path
 
 if __name__ == "__main__":
 
@@ -129,7 +214,7 @@ if __name__ == "__main__":
     #   - nogui flag
     ##
     parser = argparse.ArgumentParser(prog="LaMuse",
-                                     description=f'Generates reinterpretations of paintings (version {version_number})')
+                                     description='Generates reinterpretations of paintings')
     parser.add_argument("--input_dir", "-in", metavar='in', type=str, nargs=1,
                         help='input directory containing paintings to reinterpret (defaults to "'
                              + default_painting_folder + '" if non specified)', default=[default_painting_folder])
@@ -157,6 +242,9 @@ if __name__ == "__main__":
     parser.add_argument("--trace_file", "-tr", type=str, nargs='?',
                         help=f'output file for tracing all operations and their parameters (defaults to "{default_trace_file}" if non specified)',
                         const=default_trace_file)
+    parser.add_argument("--all_backgrounds", "-all", action = 'store_true',
+                        help=f'use all the backgrounds')
+
 
     args = parser.parse_args()
 
@@ -166,17 +254,26 @@ if __name__ == "__main__":
     default_substitute_folder = args.substitute_dir[0]
     default_background_folder = args.background_dir[0]
 
-    print(f'Painting folder: {default_painting_folder}')
-    print(f'Interpretation folder: {default_interpretation_folder}')
-    print(f'Substitute folder: {default_substitute_folder}')
-    print(f'Background folder: {default_background_folder}')
+    default_painting_folder = convert_to_absolute_path(default_painting_folder)
+    default_interpretation_folder = convert_to_absolute_path(default_interpretation_folder)
+    default_substitute_folder = convert_to_absolute_path(default_substitute_folder)
+    default_background_folder = convert_to_absolute_path(default_background_folder)
+    all_backgrounds = args.all_backgrounds
+
+    print(default_painting_folder)
+    print(default_interpretation_folder)
+    print(default_substitute_folder)
+    print(default_background_folder)
+    if not all_backgrounds:
+        print("Backgrounds will be chosen at random")
+    else:
+        print("Using all backgrounds")
 
     # @TODO properly include stuff using pkg_resources
     if not os.path.isfile(mask_rcnn_config_file):
         if not args.nogui:
             sg.Popup(
-                f'LaMuse ne peut pas fonctionner sans le fichier {mask_rcnn_config_file}. Merci de lire la '
-                f'documentation.',
+                'LaMuse ne peut pas fonctionner sans le fichier %s. Merci de lire la documentation.' % mask_rcnn_config_file,
                 title='Erreur')
         raise FileNotFoundError(
             errno.ENOENT, os.strerror(errno.ENOENT), mask_rcnn_config_file)
@@ -226,8 +323,12 @@ if __name__ == "__main__":
                 if args.verbose:
                     print("Calling full_case_study")
 
-                generate_full_case_study(default_painting_folder, default_substitute_folder, default_background_folder,
-                                         default_interpretation_folder)
+                generate_full_case_study(default_painting_folder, 
+                                        default_substitute_folder, 
+                                        default_background_folder,
+                                        default_interpretation_folder,
+                                        all_backgrounds = all_backgrounds
+                                        )
 
                 if args.verbose:
                     print("Done calling full_case_study")
